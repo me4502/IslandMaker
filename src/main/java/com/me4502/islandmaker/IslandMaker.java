@@ -21,6 +21,9 @@
  */
 package com.me4502.islandmaker;
 
+import com.flowpowered.noise.NoiseQuality;
+import com.flowpowered.noise.module.source.Perlin;
+
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.FlowLayout;
@@ -29,8 +32,10 @@ import java.awt.GridLayout;
 import java.awt.event.ActionEvent;
 import java.awt.image.BufferedImage;
 import java.text.NumberFormat;
+import java.util.Hashtable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
@@ -50,13 +55,18 @@ public class IslandMaker {
     private JFrame mainWindow;
 
     private ImageIcon imageIcon;
+    private JLabel imageLabel;
 
     private JFormattedTextField widthField;
     private JFormattedTextField heightField;
 
-    private JSlider islandSizePercentage;
+    private JFormattedTextField seedField;
 
-    public IslandMaker() {
+    private JSlider islandSizePercentage;
+    private JSlider octaveSlider;
+    private JSlider qualitySlider;
+
+    private IslandMaker() {
         NumberFormatter intFormatter = new NumberFormatter(NumberFormat.getIntegerInstance());
         intFormatter.setValueClass(Integer.class);
         intFormatter.setMinimum(0);
@@ -77,7 +87,7 @@ public class IslandMaker {
         JPanel displayPanel = new JPanel();
 
         imageIcon = new ImageIcon();
-        displayPanel.add(new JLabel(imageIcon));
+        displayPanel.add(imageLabel = new JLabel(imageIcon));
 
         mainPanel.add(displayPanel);
 
@@ -105,6 +115,37 @@ public class IslandMaker {
         islandSizePercentage.setMinorTickSpacing(5);
         settingsPanel.add(islandSizePercentage);
 
+        settingsPanel.add(new JLabel("Octaves:"));
+        octaveSlider = new JSlider(1, Perlin.PERLIN_MAX_OCTAVE, Perlin.DEFAULT_PERLIN_OCTAVE_COUNT);
+        octaveSlider.setPaintTicks(true);
+        octaveSlider.setPaintLabels(true);
+        octaveSlider.setMajorTickSpacing(8);
+        octaveSlider.setMinorTickSpacing(2);
+        settingsPanel.add(octaveSlider);
+
+        settingsPanel.add(new JLabel("Quality:"));
+        qualitySlider = new JSlider(0, NoiseQuality.values().length - 1, Perlin.DEFAULT_PERLIN_QUALITY.ordinal());
+        qualitySlider.setPaintTicks(true);
+        qualitySlider.setPaintLabels(true);
+        qualitySlider.setMajorTickSpacing(1);
+        qualitySlider.setMinorTickSpacing(1);
+        Hashtable<Integer, JLabel> qualityTable = new Hashtable<>();
+        qualityTable.put(0, new JLabel("Low"));
+        qualityTable.put(1, new JLabel("Normal"));
+        qualityTable.put(2, new JLabel("High"));
+        qualitySlider.setLabelTable(qualityTable);
+        settingsPanel.add(qualitySlider);
+
+        settingsPanel.add(new JLabel("Seed:"));
+        seedField = new JFormattedTextField(intFormatter);
+        seedField.setValue(256);
+        seedField.setColumns(10);
+        settingsPanel.add(seedField);
+
+        JButton randomSeedButton = new JButton("Random Seed");
+        randomSeedButton.addActionListener(e -> seedField.setValue(ThreadLocalRandom.current().nextInt()));
+        settingsPanel.add(randomSeedButton);
+
         JButton generateButton = new JButton("Generate Island");
         generateButton.addActionListener(this::generateIsland);
         settingsPanel.add(generateButton);
@@ -121,41 +162,78 @@ public class IslandMaker {
         new IslandMaker();
     }
 
-    public void generateIsland(ActionEvent e) {
+    private void generateIsland(ActionEvent e) {
         int width = (int) widthField.getValue();
         int height = (int) heightField.getValue();
+
+        int seed = (int) seedField.getValue();
+        int octaves = octaveSlider.getValue();
+        int quality = qualitySlider.getValue();
 
         int islandCentreX = width / 2;
         int islandCentreY = height / 2;
 
-        float islandCutoff = islandSizePercentage.getValue() / 100.0f;
+        float islandCutoff = Math.max(0.000000000000001f, islandSizePercentage.getValue() / 100.0f);
 
         executor.submit(() -> {
             // Generate an image gradient.
-            float[][] gradient = new float[width][height];
+            double[][] noiseArray = new double[width][height];
 
             for (int x = 0; x < width; x++) {
                 for (int y = 0; y < height; y++) {
-                    float distance = (float) Math.sqrt(Math.pow(islandCentreX - x, 2) + Math.pow(islandCentreY - y, 2)) * islandCutoff;
-                    gradient[x][y] = distance / (Math.max(width, height) / islandCutoff);
+                    double distance = Math.sqrt(Math.pow(islandCentreX - x, 2) + Math.pow(islandCentreY - y, 2)) / islandCutoff;
+                    noiseArray[x][y] = 1 - Math.min(1, Math.max(0, distance / Math.max(width, height)));
                 }
             }
+
+            Perlin noiseGenerator = new Perlin();
+            noiseGenerator.setSeed(seed);
+            noiseGenerator.setOctaveCount(octaves);
+            noiseGenerator.setNoiseQuality(NoiseQuality.values()[quality]);
+
+            // Add noise to the gradient.
+            for (int x = 0; x < width; x++) {
+                for (int y = 0; y < height; y++) {
+                    double noiseOutput = noiseGenerator.getValue(x / (double) width, y / (double) height, 0) / noiseGenerator.getMaxValue();
+                    noiseArray[x][y] -= noiseOutput;
+                    noiseArray[x][y] = Math.min(1, noiseArray[x][y]);
+                    noiseArray[x][y] = Math.max(0, noiseArray[x][y]);
+                }
+            }
+
 
             BufferedImage bufferedImage = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);
 
             Graphics2D graphics = bufferedImage.createGraphics();
             for (int x = 0; x < width; x++) {
                 for (int y = 0; y < height; y++) {
-                    graphics.setColor(new Color(gradient[x][y], gradient[x][y], gradient[x][y]));
+                    graphics.setColor(colorForHeight(noiseArray[x][y]));
                     graphics.fillRect(x, y, 1, 1);
                 }
             }
 
             SwingUtilities.invokeLater(() -> {
                 imageIcon.setImage(bufferedImage);
+                imageLabel.setSize(bufferedImage.getWidth(), bufferedImage.getHeight());
                 mainWindow.pack();
                 mainWindow.repaint();
             });
         });
+    }
+
+    private Color colorForHeight(double height) {
+        if (height <= 0.1) {
+            return Color.BLUE;
+        } else if (height <= 0.25) {
+            return Color.CYAN;
+        } else if (height <= 0.3) {
+            return Color.YELLOW;
+        } else if (height <= 0.35) {
+            return Color.GREEN;
+        } else if (height <= 0.5) {
+            return new Color(17, 71, 32);
+        } else {
+            return Color.WHITE;
+        }
     }
 }
